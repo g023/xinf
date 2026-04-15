@@ -265,3 +265,54 @@ Qwen3.5-2B is a hybrid linear-attention + full-attention multimodal model:
 ## License
 
 MIT
+
+## main.py output:
+
+#### Qwen 3-1.77B with INT4 gs256:
+
+```plaintext
+python main.py generate "Explain quantum computing" --quantize int4_triton --max-tokens 256
+```
+
+```plaintext
+Loading weights: 100%|████████████████████████████████████████████████████████████████████| 321/321 [00:00<00:00, 550.61it/s]
+  Replaced 204 linear layers with INT4 (group_size=256, skipped 0)
+[TurboXInf] Model loaded in 9.204s
+[TurboXInf] Warming up...
+The following generation flags are not valid and may be ignored: ['temperature', 'top_p', 'top_k']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+[TurboXInf] Warmup done in 34.19s
+<think>
+Okay, I need to explain what quantum computing is. Let me start by recalling what I know about classical computing. In traditional computers, information is processed using bits. A bit can be either a 0 or a 1. But in quantum computing, we use qubits, which are like the quantum counterpart of bits.
+
+So, first, I should define what a bit is. A bit can be 0 or 1. But in a quantum computer, the qubit can be both 0 and 1 at the same time, which is called superposition. That's probably why quantum computers can do things faster than classical ones. 
+
+Wait, how does superposition work? Because a qubit can exist in multiple states simultaneously. So, instead of just being 0 or 1, it's both. This allows quantum computers to process a lot of possibilities at once. For example, if you have a problem that needs checking all possible solutions, a quantum computer could check them all at once through superposition.
+
+Then there's entanglement. When two qubits are entangled, the state of one instantly influences the other, no matter where they are. This might allow for faster communication or parallel processing. But how does this help with computation?
+
+[142.95 tok/s, 256 tokens]
+```
+
+#### Qwen 3.5-2B with INT4 gs256:
+
+```plaintext
+python main.py generate "Explain quantum computing" --quantize int4_triton --max-tokens 256 --model Qwen/Qwen3.5-2B
+```
+
+```plaintext
+[TurboXInf] Warmup done in 58.98s
+Setting `pad_token_id` to `eos_token_id`:248044 for open-end generation.
+Here's a thinking process that leads to the suggested explanation of quantum computing:
+
+1.  **Understand the Goal:** The user wants an "Explanation" of what Quantum Computing is. This means I need to define it, compare it to classical computing, describe its core principles (qubits, superposition, entanglement), mention current applications/scenarios (why it matters?), and perhaps touch upon challenges/real-world status.
+
+2.  **Target Audience:** The prompt is very broad ("Explain quantum computing"). It could be for a total beginner or someone with some interest in tech but not necessarily looking for academic proofs. Given the context of similar requests, it's likely best to aim for a balance between clarity and depth, suitable for a general audience interested in technology, science, or future trends.
+
+3.  **Key Concepts to Cover:**
+    *   **Definition:** What is it? (Parallelism vs. Entanglement).
+    *   **Qubit:** How does information work differently than bits? (Superposition, Super-fast).
+    *   **Entanglement:** How do qubits interact? (Correlations, teleportation).
+    *   **Algorithm/Classical Comparison:** Grover's Algorithm, Sh
+
+[129.73 tok/s, 256 tokens]
+```
