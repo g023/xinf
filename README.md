@@ -1,4 +1,4 @@
-# TurboXInf — 2x Faster Inference Engine for Qwen3-1.77B
+# g023's TurboXInf — 2x Faster Inference Engine for Qwen3-1.77B
 
 Author: **g023**  - 
 License: **MIT** - Created: **April 15, 2026**
