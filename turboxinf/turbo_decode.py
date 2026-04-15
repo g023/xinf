@@ -101,7 +101,7 @@ class TurboDecoder:
         self._decode_position_ids.fill_(position)
         self._decode_cache_position.fill_(position)
 
-        model_fn = self._compiled_forward or self.model
+        model_fn = self._compiled_forward if self._compiled_forward is not None else self.model
 
         # Warmup runs to stabilize memory
         for _ in range(3):
@@ -145,7 +145,7 @@ class TurboDecoder:
         self._decode_position_ids[0, 0] = position
         self._decode_cache_position[0] = position
 
-        model_fn = self._compiled_forward or self.model
+        model_fn = self._compiled_forward if self._compiled_forward is not None else self.model
         with torch.no_grad():
             out = model_fn(
                 input_ids=self._decode_input_ids,

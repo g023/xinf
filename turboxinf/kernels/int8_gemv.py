@@ -145,16 +145,19 @@ class LinearINT8(nn.Module):
         return y.view(*orig_shape[:-1], self.M)
 
 
-def replace_linear_with_int8(model: nn.Module, skip_lm_head: bool = False) -> nn.Module:
+def replace_linear_with_int8(model: nn.Module, skip_lm_head: bool = False,
+                              skip_patterns: list = None) -> nn.Module:
     """Replace all nn.Linear layers in a model with LinearINT8.
     
     Args:
         model: The model to quantize
         skip_lm_head: If True, don't quantize the lm_head (for tied embeddings)
+        skip_patterns: List of name patterns to skip (e.g., ["vision", "visual"])
     
     Returns:
         The model with INT8 linear layers
     """
+    skip_patterns = skip_patterns or []
     replaced = 0
     skipped = 0
 
@@ -164,6 +167,10 @@ def replace_linear_with_int8(model: nn.Module, skip_lm_head: bool = False) -> nn
                 full_name = f"{name}.{child_name}" if name else child_name
 
                 if skip_lm_head and "lm_head" in full_name:
+                    skipped += 1
+                    continue
+
+                if any(pat in full_name for pat in skip_patterns):
                     skipped += 1
                     continue
 

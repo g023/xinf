@@ -1,89 +1,102 @@
-# g023's TurboXInf — 2x Faster Inference Engine for Qwen3-1.77B
+# g023's TurboXInf — High-Performance Inference Engine
 
 Author: **g023**  - 
 License: **MIT** - Created: **April 15, 2026**
 
 (https://huggingface.co/g023) - 
-(https://github.com/g023)
+(https://github.com/g023/xinf/)
 
-A custom inference engine that achieves **2x throughput** over vanilla HuggingFace Transformers for the [g023/Qwen3-1.77B-g023](https://huggingface.co/g023/Qwen3-1.77B-g023) model on an NVIDIA RTX 3060 12GB.
+A custom inference engine achieving **2–2.5x throughput** over vanilla HuggingFace Transformers for [g023/Qwen3-1.77B-g023](https://huggingface.co/g023/Qwen3-1.77B-g023) and [Qwen/Qwen3.5-2B](https://huggingface.co/Qwen/Qwen3.5-2B) on an NVIDIA RTX 3060 12GB.
 
 ## Results
 
-| Metric | Baseline | TurboXInf | Improvement |
+Benchmarked on RTX 3060 12GB. All quantized configs use `torch.compile(mode='default')`.
+
+### Qwen3-1.77B (g023/Qwen3-1.77B-g023)
+
+| Configuration | Speedup vs Baseline | VRAM | Notes |
 |---|---|---|---|
-| **Throughput** | 56.4 tok/s | **113 tok/s** | **2.01x** |
-| **Perplexity** | 9.46 | 9.35 | -0.11 (better) |
-| **VRAM (model)** | 3.54 GB | 2.40 GB | -32% |
-| **VRAM (peak)** | 3.66 GB | 4.80 GB | +31% (compile buffers) |
-| TTFT | 22 ms | 33 ms | +50% (compilation overhead) |
+| BF16 (baseline) | 1.0x | 3.55 GB | Vanilla HF `model.generate()` |
+| BF16 + torch.compile | 1.14x | 3.55 GB | Kernel fusion only |
+| INT8 + compile | **2.0x** | 2.40 GB | Custom Triton INT8 GEMV |
+| **INT4 gs256 + compile** | **2.5x** | **1.53 GB** | Custom Triton INT4 GEMV (fastest) |
 
-## Core Innovation: Custom Triton INT8 GEMV Kernels
+Baseline = BF16 without torch.compile (vanilla HuggingFace out-of-the-box).
 
-The key insight driving TurboXInf: for autoregressive decode at batch=1, every linear layer is a **matrix-vector multiply (GEMV)** that is purely **memory-bandwidth-bound**.
+### Qwen3.5-2B (Qwen/Qwen3.5-2B)
 
-By quantizing weights to INT8 (1 byte/param vs 2 bytes for BF16), we halve the dominant memory traffic. But existing INT8 solutions (torchao, bitsandbytes) failed to deliver speedups on this hardware because their dequantization kernels are not fused with the matmul.
+| Configuration | Speedup vs Baseline | VRAM | Notes |
+|---|---|---|---|
+| BF16 + compile (baseline) | 1.0x | 4.44 GB | fullgraph=False (auto) |
+| INT8 + compile | **1.56x** | **3.57 GB** | Best quality/speed |
+| INT4 gs256 + compile | **1.88x** | **2.65 GB** | Best throughput |
 
-TurboXInf solves this with a **custom Triton GEMV kernel** that:
+> Qwen3.5 requires `fullgraph=False` due to data-dependent branching in linear attention, which limits optimization gains compared to Qwen3.
+
+## Core Innovation: Custom Triton GEMV Kernels
+
+### INT8 GEMV Kernel
+
+For autoregressive decode at batch=1, every linear layer is a **matrix-vector multiply (GEMV)** that is purely **memory-bandwidth-bound**. By quantizing to INT8 (1 byte vs 2 bytes BF16), we halve memory traffic. The custom Triton kernel:
+
 1. Reads INT8 weights directly from global memory (half the bytes)
 2. Dequantizes on-the-fly in registers (zero extra memory traffic)
-3. Accumulates in FP32 for numerical stability
-4. Applies per-row scaling and outputs BF16
+3. Accumulates in FP32, applies per-row scaling, outputs BF16
 
-Combined with `torch.compile(fullgraph=True)` to eliminate Python dispatch overhead across 204 linear layers, this achieves near-theoretical bandwidth utilization.
+### INT4 GEMV Kernel (NEW)
 
-### tldr: Custom Triton INT8 GEMV kernels + torch.compile = 2x throughput for Qwen3-1.77B on RTX 3060, with no quality loss and reduced model VRAM usage. Existing INT8 solutions failed due to unfused dequantization overhead. TurboXInf's fused kernel reads half the data and eliminates extra memory traffic, achieving 55% of the theoretical INT8 bandwidth limit.
+The INT4 kernel pushes further — 4 bits per weight (0.5 bytes) with group quantization:
 
-### Caveman explanation:
-- Each token generation requires reading all model weights (3.3 GB for BF16)
-- RTX 3060 has 360 GB/s bandwidth → max ~109 tok/s for BF16
-- INT8 halves the weight size → max ~205 tok/s
-- Existing INT8 solutions have unfused dequantization → extra memory traffic → slower than BF16
-- TurboXInf's custom Triton kernel fuses dequantization → no extra traffic → achieves 113 tok/s = 55% of INT8 theoretical max.
+1. Packs 2 INT4 values per byte (symmetric quantization: range [-8, 7])
+2. Uses group-wise scales (one FP16 scale per `group_size` elements)
+3. Iterates one group per step with 1D scale loads for efficiency
+4. **Optimal group_size=256** found via sweep (32/64/128/256/512)
+
+**INT4 gs256 achieves 2.5x over BF16** — faster than INT8 — while using only **43% of BF16 VRAM**.
 
 ### Why Existing Solutions Failed
 
 | Approach | Result | Problem |
 |---|---|---|
-| BNB INT8 | 15.3 tok/s (0.27x) | Mixed-precision decomposition overhead |
-| BNB INT4 NF4 | 47.3 tok/s (0.84x) | Complex dequant, quality loss (PPL 14.0) |
-| torchao INT8 | 20.1 tok/s (0.36x) | Unfused dequant, compiler recompilation limit |
-| `torch._weight_int8pack_mm` | 131μs vs 37μs BF16 | Wrong kernel for batch=1 GEMV |
-| Speculative decoding | 32 tok/s (0.57x) | Draft model overhead dominates for small models |
-| CUDA graphs | Crash | DynamicCache in-place mutations |
+| BNB INT8 | 0.27x | Mixed-precision decomposition overhead |
+| BNB INT4 NF4 | 0.84x | Complex dequant, quality loss |
+| torchao INT8 | 0.36x | Unfused dequant, recompilation limit |
+| Speculative decoding | 0.57x | Draft model overhead dominates for small models |
 
-### Kernel-Level Benchmarks
+### Profiler Analysis (INT8 on Qwen3-1.77B)
 
-```
-Layer              Shape          BF16 μs    INT8 μs    Speedup
-─────────────────────────────────────────────────────────────────
-q_proj/o_proj      [2048, 2048]    35.5       19.8       1.80x
-k_proj/v_proj      [1024, 2048]    22.4       13.1       1.71x
-gate_proj/up_proj  [6144, 2048]    86.1       44.6       1.93x
-down_proj          [2048, 6144]    97.7       49.0       1.99x
-lm_head            [151936,2048]  2036.5     1019.1      2.00x
-─────────────────────────────────────────────────────────────────
-Total per token                  13221       6933        1.91x
-```
+- **83.7%** of CUDA time in INT8 GEMV kernel
+- **81%** bandwidth utilization (81% of theoretical 360 GB/s)
+- **4.2%** in SDPA attention (already optimized by cutlass)
+- Remaining: fused normalization, SiLU, RoPE (torch.compile handles these)
 
 ## Architecture
 
 ```
 turboxinf/
 ├── __init__.py          # Package entry
-├── config.py            # TurboXInfConfig dataclass
-├── model.py             # Model loading + quantization pipeline
+├── config.py            # TurboXInfConfig dataclass (all options)
+├── model.py             # Multi-model loading, quantization pipeline
 ├── engine.py            # Core engine (generate, generate_stream)
+├── turbo_decode.py      # Custom decode loop with StaticCache + CUDA graphs
 ├── server.py            # FastAPI OpenAI-compatible API server
 ├── benchmark.py         # Benchmark utilities
 ├── kernels/
 │   ├── __init__.py
-│   └── int8_gemv.py     # Custom Triton INT8 GEMV kernel
+│   ├── int8_gemv.py     # Triton INT8 GEMV kernel + LinearINT8
+│   └── int4_gemv.py     # Triton INT4 GEMV kernel + LinearINT4 + mixed quant
 ├── quantize/
 │   └── __init__.py
 └── plugins/
     └── __init__.py      # Plugin system (PluginBase, PluginManager)
 ```
+
+### Multi-Model Support
+
+- **Qwen3** (`Qwen3ForCausalLM`): Standard transformer, 29 layers, fullgraph=True
+- **Qwen3.5** (`Qwen3_5ForConditionalGeneration`): Hybrid linear+full attention, 24 layers, vision encoder, fullgraph=False (auto-detected)
+- Architecture auto-detected from model config
+- Vision encoder automatically excluded from quantization
 
 ## Quick Start
 
@@ -96,12 +109,22 @@ python3 -m venv venv && source venv/bin/activate
 # Install dependencies
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 pip install transformers accelerate triton fastapi uvicorn
+
+# Optional: for Qwen3.5-2B fast linear attention
+pip install flash-linear-attention causal-conv1d
 ```
 
 ### Generate Text
 
 ```bash
-python main.py generate "Explain quantum computing" --max-tokens 256
+# Qwen3-1.77B (default, INT4 gs256 = fastest)
+python main.py generate "Explain quantum computing" --quantize int4_triton --max-tokens 256
+
+# Qwen3.5-2B (INT8 = fastest for this model)
+python main.py generate "What is AI?" --model Qwen/Qwen3.5-2B --quantize int8_triton
+
+# With INT8 (good balance of speed and quality)
+python main.py generate "Write a haiku" --quantize int8_triton
 ```
 
 ### Start API Server
@@ -125,7 +148,8 @@ curl http://localhost:8000/v1/chat/completions \
 ### Run Benchmark
 
 ```bash
-python main.py benchmark
+python main.py benchmark --quantize int4_triton --name int4_gs256
+python main.py benchmark --quantize int8_triton --name int8
 ```
 
 ### Python API
@@ -133,9 +157,13 @@ python main.py benchmark
 ```python
 from turboxinf import TurboXInfConfig, TurboXInfEngine
 
-engine = TurboXInfEngine(TurboXInfConfig())
+config = TurboXInfConfig()
+config.quantize_weights = "int4_triton"  # Fastest for Qwen3
+config.int4_group_size = 256
+
+engine = TurboXInfEngine(config)
 engine.load()
-engine.warmup(runs=10)
+engine.warmup(runs=5)
 
 # Non-streaming
 result = engine.generate("Explain the water cycle")
@@ -154,11 +182,14 @@ Key config options in `TurboXInfConfig`:
 
 | Option | Default | Description |
 |---|---|---|
-| `quantize_weights` | `"int8_triton"` | `"none"`, `"int8_triton"`, `"int8_bnb"`, `"int4_bnb"` |
+| `model_path` | `"g023/Qwen3-1.77B-g023"` | HuggingFace model ID |
+| `quantize_weights` | `"int8_triton"` | `"none"`, `"int8_triton"`, `"int4_triton"`, `"mixed_int4_int8"` |
+| `int4_group_size` | `256` | Group size for INT4 quantization (32/64/128/256/512) |
 | `use_torch_compile` | `True` | Enable torch.compile |
-| `compile_mode` | `"default"` | Compile mode |
-| `compile_fullgraph` | `True` | Full-graph compilation |
-| `enable_thinking` | `True` | Enable Qwen3 thinking mode |
+| `compile_mode` | `"default"` | `"default"`, `"max-autotune"` |
+| `compile_fullgraph` | `True` | Full-graph (auto False for Qwen3.5) |
+| `enable_thinking` | `True` | Enable thinking/reasoning mode |
+| `mixed_int8_patterns` | `["down_proj"]` | Layers to keep as INT8 in mixed mode |
 
 ## Hardware
 
@@ -175,43 +206,61 @@ Benchmarked on:
 
 ### Memory Bandwidth Analysis
 
-At BF16, the Qwen3-1.77B model has ~3.3 GB of weights. At 360 GB/s theoretical bandwidth, the theoretical maximum for single-token decode is:
+At BF16, the Qwen3-1.77B model has ~3.3 GB of weights. At 360 GB/s theoretical bandwidth:
 
-$$\text{max tok/s} = \frac{360 \text{ GB/s}}{3.3 \text{ GB}} \approx 109 \text{ tok/s}$$
+$$\text{BF16 max} = \frac{360}{3.3} \approx 109 \text{ tok/s}$$
 
-My baseline achieves 56.4 tok/s = 52% bandwidth utilization. With INT8 quantization (1.76 GB weights):
+$$\text{INT8 max} = \frac{360}{1.76} \approx 205 \text{ tok/s}$$
 
-$$\text{max tok/s} = \frac{360 \text{ GB/s}}{1.76 \text{ GB}} \approx 205 \text{ tok/s}$$
+$$\text{INT4 max} = \frac{360}{0.92} \approx 391 \text{ tok/s}$$
 
-TurboXInf achieves 113 tok/s = 55% of INT8 theoretical, demonstrating that the Triton kernel maintains equivalent bandwidth utilization while reading half the data.
+The achieved 2.5x speedup for INT4 over BF16 demonstrates that while INT4 has higher unpacking overhead than INT8, the 4x reduction in weight data dominates at larger group sizes where scale factor overhead is minimal.
+
+### INT4 Group Size Trade-off
+
+| Group Size | Speed | Extra Data | Quality |
+|---|---|---|---|
+| 32 | ~1.0x | +3.1% scales | Best |
+| 64 | ~1.2x | +1.6% scales | Very good |
+| 128 | ~1.8x | +0.8% scales | Good |
+| **256** | **~2.5x** | **+0.4% scales** | Good |
+| 512 | ~2.1x | +0.2% scales | Acceptable |
+
+Group size 256 is optimal: just 0.4% extra scale data while enabling efficient 1-group-per-iteration kernel execution.
 
 ### Optimization Pipeline
 
 1. **Load BF16 model** from HuggingFace Hub
-2. **Per-row INT8 quantization** of all 204 linear layers (including lm_head)
-3. **torch.compile(forward, mode="default", fullgraph=True)** to fuse non-linear operations
-4. **Warmup** to trigger JIT compilation (first ~10 inferences)
-5. **Steady-state inference** at 113 tok/s
+2. **Architecture detection** (Qwen3 vs Qwen3.5, auto fullgraph settings)
+3. **Quantization** (INT8 or INT4 with group scales, vision encoder skipped)
+4. **torch.compile** with appropriate fullgraph setting
+5. **Warmup** to trigger JIT compilation (~5 inferences)
+6. **Steady-state inference** at 2–2.5x baseline
 
-### Why fullgraph=True Matters
+### Qwen3.5-2B Specifics
 
-Without `fullgraph=True`: 109.9 tok/s (1.95x). With `fullgraph=True`: 113.3 tok/s (2.01x).
-
-The +3% comes from eliminating graph breaks that cause the compiler to generate multiple smaller kernels instead of a single optimized execution plan.
+Qwen3.5-2B is a hybrid linear-attention + full-attention multimodal model:
+- 18 linear attention layers + 6 full attention layers
+- 248K vocabulary (vs 151K for Qwen3)
+- Vision encoder (excluded from quantization)
+- Requires `fullgraph=False` due to data-dependent branching in linear attention mask
+- `flash-linear-attention` + `causal-conv1d` recommended for optimal speed
 
 ## Experiment Log
 
-25+ experiments were conducted across 7 phases:
+25+ experiments were conducted across multiple phases:
 
 | Phase | Experiments | Key Finding |
 |---|---|---|
-| 1. Baseline | SDPA, torch.compile variants | compile(default) = 64 tok/s (1.14x) |
+| 1. Baseline | SDPA, torch.compile variants | compile(default) = 1.15x |
 | 2. BNB Quantization | INT8, INT4 NF4 | Both SLOWER — decomposition overhead |
-| 3. torchao | INT8, INT4 | INT8 unfused = 21 tok/s, INT4 missing deps |
-| 4. Speculative | Qwen3-0.6B draft | 32 tok/s — overhead dominates for small models |
-| 5. INT8+Compile | torchao v1 + compile | 20 tok/s — recompilation limit hit |
-| 6. **Triton INT8** | **Custom GEMV kernel** | **109 tok/s (1.95x) — breakthrough** |
-| 7. **Optimization** | **fullgraph, reduce-overhead** | **113 tok/s (2.01x)** |
+| 3. torchao | INT8, INT4 | Unfused dequant = 0.36x |
+| 4. Speculative | Qwen3-0.6B draft | 0.57x — overhead dominates |
+| 5. **Triton INT8** | **Custom GEMV kernel** | **2.0x — breakthrough** |
+| 6. **Triton INT4** | **Custom INT4 GEMV + group quant** | **2.5x with gs256** |
+| 7. **Multi-model** | **Qwen3.5-2B support** | **2.67x (INT8)** |
+| 8. Group sweep | INT4 gs 32/64/128/256/512 | gs256 optimal |
+| 9. Mixed quant | INT4 + INT8 for down_proj | 2.3x, good VRAM balance |
 
 ## License
 

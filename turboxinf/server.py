@@ -6,10 +6,12 @@ License: MIT
 TurboXInf — FastAPI Inference Server
 
 OpenAI-compatible API with streaming support.
+Supports Qwen3 and Qwen3.5 models with INT8/INT4 Triton quantization.
 """
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from typing import AsyncGenerator, Optional
@@ -18,7 +20,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .config import TurboXInfConfig
+from .config import TurboXInfConfig, QUANT_MODES
 from .engine import TurboXInfEngine
 
 
@@ -63,7 +65,7 @@ class ChatResponse(BaseModel):
 
 # ── App ──────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="TurboXInf", version="1.0.0")
+app = FastAPI(title="TurboXInf", version="2.0.0")
 engine: Optional[TurboXInfEngine] = None
 
 
@@ -73,10 +75,25 @@ def get_engine() -> TurboXInfEngine:
     return engine
 
 
+def _build_config() -> TurboXInfConfig:
+    """Build config from environment variables."""
+    config = TurboXInfConfig()
+    config.model_path = os.environ.get("TURBOXINF_MODEL", config.model_path)
+    quant = os.environ.get("TURBOXINF_QUANTIZE", config.quantize_weights)
+    if quant in QUANT_MODES:
+        config.quantize_weights = quant
+    gs = os.environ.get("TURBOXINF_INT4_GROUP_SIZE")
+    if gs and gs.isdigit():
+        config.int4_group_size = int(gs)
+    if os.environ.get("TURBOXINF_NO_COMPILE", "").lower() in ("1", "true"):
+        config.use_torch_compile = False
+    return config
+
+
 @app.on_event("startup")
 async def startup():
     global engine
-    config = TurboXInfConfig()
+    config = _build_config()
     engine = TurboXInfEngine(config)
     engine.load()
     engine.warmup(runs=10)
@@ -90,10 +107,12 @@ async def health():
 
 @app.get("/v1/models")
 async def list_models():
+    e = get_engine()
+    model_id = e.config.model_path
     return {
         "object": "list",
         "data": [{
-            "id": "g023/Qwen3-1.77B-g023",
+            "id": model_id,
             "object": "model",
             "owned_by": "turboxinf",
         }],
