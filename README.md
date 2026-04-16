@@ -274,3 +274,27 @@ Qwen3.5-2B is a hybrid linear-attention + full-attention multimodal model:
 ## License
 
 MIT
+
+## OUTPUT - Qwen 3.5-2B
+
+```plaintext
+python main.py generate "What is AI?" --model Qwen/Qwen3.5-2B --quantize int4_triton
+[TurboXInf] Detected architecture: qwen3_5
+Loading weights: 100%|████████████| 617/617 [00:00<00:00, 1058.02it/s]
+  Replaced 187 linear layers with INT4 (group_size=256, skipped 98)
+[TurboXInf] Model loaded in 10.905s
+  [WARN] Qwen3.5 linear attention uses data-dependent branching; setting fullgraph=False automatically
+[TurboXInf] Warming up...
+[TurboXInf] Warmup done in 51.82s
+Okay, the user asked "What is AI?" Let me figure out how to respond. First, I need to define what Artificial Intelligence (AI) means clearly but simply. The term comes from Latin roots: artificial for humans, intelligence referring to cognitive functions. So combining them gives a system that mimics human intelligence.
+
+I should consider examples of common uses like image recognition, speech processing, and decision-making. Maybe mention that it's not fully autonomous yet, since some people think machines are already super smart. Also, note that different forms exist: rule-based, machine learning, deep learning, etc. But keep it simple for now.
+
+Wait, maybe also address that AI has ethical considerations. Some users might be concerned about safety or privacy. But the question is just asking what AI is, so focus on definition first, then maybe add context about limitations or future possibilities.
+
+Check if the answer covers key aspects: definition, examples, applications, potential benefits, and maybe caveats about current capabilities vs. future goals. That would make the answer comprehensive without overcomplicating. Make sure to avoid jargon where possible, use clear language.
+
+Also, check for any sensitive topics. Ethical issues are important but the main query is about the concept. Keep
+
+[129.56 tok/s, 256 tokens]
+```
