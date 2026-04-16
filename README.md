@@ -4,7 +4,7 @@ Author: **g023**  -
 License: **MIT** - Created: **April 15, 2026**
 
 (https://huggingface.co/g023) - 
-(https://github.com/g023/xinf/)
+(https://github.com/g023)
 
 A custom inference engine achieving **2–2.5x throughput** over vanilla HuggingFace Transformers for [g023/Qwen3-1.77B-g023](https://huggingface.co/g023/Qwen3-1.77B-g023) and [Qwen/Qwen3.5-2B](https://huggingface.co/Qwen/Qwen3.5-2B) on an NVIDIA RTX 3060 12GB.
 
@@ -110,9 +110,17 @@ python3 -m venv venv && source venv/bin/activate
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 pip install transformers accelerate triton fastapi uvicorn
 
+# Install torchao (must use the PyTorch CUDA index to get the correct ABI wheel)
+pip install torchao --index-url https://download.pytorch.org/whl/cu126
+
 # Optional: for Qwen3.5-2B fast linear attention
 pip install flash-linear-attention causal-conv1d
+
+# Optional: set HF_TOKEN for authenticated downloads (avoids rate limits)
+export HF_TOKEN="hf_..."
 ```
+
+> **Note:** `torchao` must be installed from the PyTorch CUDA index (`--index-url https://download.pytorch.org/whl/cu126`). The default PyPI wheel ships `.so` files built for the wrong Python ABI. `causal-conv1d` requires `nvcc`; if unavailable, Qwen3.5 falls back to a torch implementation automatically with no speed penalty when using `torch.compile`.
 
 ### Generate Text
 
@@ -230,12 +238,13 @@ Group size 256 is optimal: just 0.4% extra scale data while enabling efficient 1
 
 ### Optimization Pipeline
 
-1. **Load BF16 model** from HuggingFace Hub
+1. **Load BF16 model** from HuggingFace Hub (HF/transformers warnings auto-suppressed)
 2. **Architecture detection** (Qwen3 vs Qwen3.5, auto fullgraph settings)
 3. **Quantization** (INT8 or INT4 with group scales, vision encoder skipped)
-4. **torch.compile** with appropriate fullgraph setting
-5. **Warmup** to trigger JIT compilation (~5 inferences)
-6. **Steady-state inference** at 2–2.5x baseline
+4. **pad_token_id** set from tokenizer to prevent per-call warnings
+5. **torch.compile** with appropriate fullgraph setting (recompile limit auto-tuned for Qwen3.5)
+6. **Warmup** to trigger JIT compilation (~5–10 inferences, dynamo/inductor warnings suppressed)
+7. **Steady-state inference** at 2–2.5x baseline with clean output
 
 ### Qwen3.5-2B Specifics
 
@@ -265,54 +274,3 @@ Qwen3.5-2B is a hybrid linear-attention + full-attention multimodal model:
 ## License
 
 MIT
-
-## main.py output:
-
-#### Qwen 3-1.77B with INT4 gs256:
-
-```plaintext
-python main.py generate "Explain quantum computing" --quantize int4_triton --max-tokens 256
-```
-
-```plaintext
-Loading weights: 100%|████████████████████████████████████████████████████████████████████| 321/321 [00:00<00:00, 550.61it/s]
-  Replaced 204 linear layers with INT4 (group_size=256, skipped 0)
-[TurboXInf] Model loaded in 9.204s
-[TurboXInf] Warming up...
-The following generation flags are not valid and may be ignored: ['temperature', 'top_p', 'top_k']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
-[TurboXInf] Warmup done in 34.19s
-<think>
-Okay, I need to explain what quantum computing is. Let me start by recalling what I know about classical computing. In traditional computers, information is processed using bits. A bit can be either a 0 or a 1. But in quantum computing, we use qubits, which are like the quantum counterpart of bits.
-
-So, first, I should define what a bit is. A bit can be 0 or 1. But in a quantum computer, the qubit can be both 0 and 1 at the same time, which is called superposition. That's probably why quantum computers can do things faster than classical ones. 
-
-Wait, how does superposition work? Because a qubit can exist in multiple states simultaneously. So, instead of just being 0 or 1, it's both. This allows quantum computers to process a lot of possibilities at once. For example, if you have a problem that needs checking all possible solutions, a quantum computer could check them all at once through superposition.
-
-Then there's entanglement. When two qubits are entangled, the state of one instantly influences the other, no matter where they are. This might allow for faster communication or parallel processing. But how does this help with computation?
-
-[142.95 tok/s, 256 tokens]
-```
-
-#### Qwen 3.5-2B with INT4 gs256:
-
-```plaintext
-python main.py generate "Explain quantum computing" --quantize int4_triton --max-tokens 256 --model Qwen/Qwen3.5-2B
-```
-
-```plaintext
-[TurboXInf] Warmup done in 58.98s
-Setting `pad_token_id` to `eos_token_id`:248044 for open-end generation.
-Here's a thinking process that leads to the suggested explanation of quantum computing:
-
-1.  **Understand the Goal:** The user wants an "Explanation" of what Quantum Computing is. This means I need to define it, compare it to classical computing, describe its core principles (qubits, superposition, entanglement), mention current applications/scenarios (why it matters?), and perhaps touch upon challenges/real-world status.
-
-2.  **Target Audience:** The prompt is very broad ("Explain quantum computing"). It could be for a total beginner or someone with some interest in tech but not necessarily looking for academic proofs. Given the context of similar requests, it's likely best to aim for a balance between clarity and depth, suitable for a general audience interested in technology, science, or future trends.
-
-3.  **Key Concepts to Cover:**
-    *   **Definition:** What is it? (Parallelism vs. Entanglement).
-    *   **Qubit:** How does information work differently than bits? (Superposition, Super-fast).
-    *   **Entanglement:** How do qubits interact? (Correlations, teleportation).
-    *   **Algorithm/Classical Comparison:** Grover's Algorithm, Sh
-
-[129.73 tok/s, 256 tokens]
-```

@@ -82,6 +82,24 @@ class TurboXInfEngine:
         if self._warmed_up:
             return
 
+        import logging
+        # Suppress noisy warnings during warmup:
+        # - torch._dynamo recompilation (expected for Qwen3.5 linear attention layers)
+        # - torch._inductor SM count warnings (RTX 3060 has only 28 SMs)
+        # - transformers "generation flags not valid" (do_sample=False + config defaults)
+        _loggers_to_suppress = [
+            logging.getLogger("torch._dynamo"),
+            logging.getLogger("torch._inductor"),
+            logging.getLogger("transformers.generation.configuration_utils"),
+        ]
+        _prev_levels = [lg.level for lg in _loggers_to_suppress]
+        for lg in _loggers_to_suppress:
+            lg.setLevel(logging.ERROR)
+
+        # Also suppress the transformers "generation flags" message that goes to stderr
+        import warnings
+        warnings.filterwarnings("ignore", message=".*generation flags are not valid.*")
+
         print("[TurboXInf] Warming up...")
         t0 = time.time()
         # Short warmups to compile the initial graph
@@ -94,6 +112,8 @@ class TurboXInfEngine:
             do_sample=False,
         )
         self._warmed_up = True
+        for lg, prev in zip(_loggers_to_suppress, _prev_levels):
+            lg.setLevel(prev)
         print(f"[TurboXInf] Warmup done in {time.time() - t0:.2f}s")
 
     def _build_input(
