@@ -275,7 +275,7 @@ Qwen3.5-2B is a hybrid linear-attention + full-attention multimodal model:
 
 MIT
 
-## OUTPUT - Qwen 3.5-2B
+#### OUTPUT - Qwen 3.5-2B with INT4 Triton GEMV:
 
 ```plaintext
 python main.py generate "What is AI?" --model Qwen/Qwen3.5-2B --quantize int4_triton
